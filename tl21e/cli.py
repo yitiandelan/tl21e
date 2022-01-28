@@ -37,7 +37,7 @@ async def main():
     applet = [subobj.add_parser(app) for app in ('clean', 'import', 'replay',
                                                  'match', 'export', 'report')]
 
-    applet[1].add_argument('file', type=FileIO, nargs='+')
+    applet[1].add_argument('file', type=FileIO, nargs='*')
     applet[4].add_argument('-o', '--output', type=FileType('wb'),
                            metavar='file', help='output file')
     applet[5].add_argument('-o', '--output', type=FileType('wb'),
@@ -59,15 +59,20 @@ async def main():
 
     match args.method:
         case None:
-            _log.debug('Enter REPL')
+            await _mod.load()
+            _log.info('Enter REPL')
         case 'clean':
-            pass
+            _log.info('Enter Clean')
+            await _mod.clean()
         case 'import':
+            await _mod.load()
+            _log.info('Enter Import')
             await _mod.append(*args.file)
+            await _mod.dump()
         case '_':
             pass
 
-    _log.debug('Exited')
+    _log.info('Done (PASS, rc=0)')
 
 if __name__ == '__main__':
     asyncio.run(main())
