@@ -33,14 +33,17 @@ class Fountain(object):
 
         if os.path.isfile(path):
             self.text = FileIO(path, 'r')
+            self.parse()
         else:
-            self.text = path
+            self.text = None
 
     def parse(self, text: str = ''):
         if text:
             _txt = text
-        else:
+        elif isinstance(self.text, (FileIO,)):
             _txt = self.text.readall().decode()
+        else:
+            raise TypeError
 
         _obj = self.model.parse(_txt)
         _del = r'[\u3002\uff1b\uff0c\uff1a\u201c\u201d\uff08\uff09\u3001\uff1f\u300a\u300b\uff01\u2026]'

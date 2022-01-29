@@ -22,7 +22,7 @@ async def main():
     obj = ArgumentParser()
     obj.add_argument('-e', '--engine', type=str,
                      metavar='engine', choices=['paddle', 'aliyun', 'tencent'],
-                     default='paddle', help='speech recognition engine')
+                     default='tencent', help='speech recognition engine')
     obj.add_argument('-f', '--config', type=str,
                      metavar='file',
                      default='config.yaml', help='select config file')
@@ -69,6 +69,10 @@ async def main():
             _log.info('Enter Import')
             await _mod.append(*args.file)
             await _mod.dump()
+        case 'match':
+            await _mod.load()
+            _log.info('Enter Match')
+            await _mod.match(args.engine)
         case '_':
             pass
 
