@@ -21,6 +21,9 @@ from asyncio.exceptions import CancelledError
 from subprocess import PIPE
 from tempfile import TemporaryDirectory
 from base64 import b64encode
+from thefuzz import fuzz
+from pypinyin import lazy_pinyin
+from itertools import chain
 
 from format import Fountain
 
@@ -156,6 +159,7 @@ class Process(object):
         self._cfg: dict[str, str] = {}
         self._asr = None
         self._eng = engine
+        self._map: dict[int, tuple] = {}
 
         self.fileset: dict[int, dict[str, str | bool]] = {}
 
@@ -189,7 +193,142 @@ class Process(object):
             self._log.error(v)
             return -1
 
-        pass
+        _obj: dict[str, dict] = {}
+        _raw: dict[int, dict] = {}
+
+        for k, v in self.fileset.items():
+            fn = os.path.join(self._cwd, '{}.json'.format(v['sha1']))
+            with FileIO(fn, 'rb') as fp:
+                f0 = lambda x: int(x) if isinstance(x, str) and x.isdigit() else x
+                f1 = lambda x: x if not isinstance(x, dict) else {f0(k): v for k, v in x.items()}
+                _raw[k] = json.load(fp, object_hook=f1)
+            if 'scene' not in _raw[k]:
+                continue
+            if _obj:
+                raise
+
+            _obj = _raw[k]['scene'][0]
+            _obj = dict(title=_obj['title'],
+                        lines={int(k): v for k, v in _obj['lines'].items()},
+                        speaker={k: v for k, v in enumerate(set(v['name'] for v in _obj['lines'].values()))})
+            _raw[k]['scene'][0] = _obj
+
+        _cfg = (len(_obj['speaker']), len(_raw) - 1)
+        self._log.info(dict(speakers=_cfg[0],
+                            audio_track=_cfg[1]))
+
+        def gen_track(s: int, lpf=False):
+            ws: list[dict] = _raw[s]['asr']
+            def tc(x: dict): return min(*x.get('timecode', (-1)))
+            ws.sort(key=tc)
+            if lpf:
+                s, t0, t1 = '', 0, 0
+                for k, w in enumerate(ws):
+                    if k == 0:
+                        t1 = min(w['timecode'])
+                    if min(w['timecode']) != t1:
+                        yield dict(word=s, timecode=(t0, t1))
+                        s, t0 = '', min(w['timecode'])
+                    s += w['word']
+                    t1 = max(w['timecode'])
+                yield dict(word=s, timecode=(t0, t1))
+            else:
+                yield from ws
+
+        def gen_speaker():
+            yield from _obj['speaker'].items()
+
+        def gen_lines(*s: int):
+            dst = list(_obj['speaker'][n] for n in s)
+            for n in range(max(_obj['lines'])):
+                if _obj['lines'][n]['name'] not in dst:
+                    continue
+                yield n, _obj['lines'][n]['word']
+
+        for _t, _v in _raw.items():
+            if 'asr' not in _v:
+                continue
+
+            self._log.info('Start Match Audio Track {}'.format(_t))
+            line = lazy_pinyin([n['word'] for n in _v['asr']])
+            line = ' '.join(line)
+            _tmp = []
+
+            for k, v in _obj['speaker'].items():
+                cc = [[] if _obj['lines'][n]['name'] != v else _obj['lines'][n]['word']
+                      for n in range(max(_obj['lines']))]
+                for c in cc:
+                    if len(c) == 0:
+                        continue
+                    c = lazy_pinyin(c)
+                    c = ' '.join(c)
+                    t = fuzz.partial_ratio(c, line)
+
+                    if t < 95:
+                        continue
+                    elif len(c) < 10:
+                        continue
+
+                    self._log.debug(dict(uid=k,
+                                         name=v,
+                                         size=len(c),
+                                         ratio=t))
+                    _tmp.append(k)
+
+            if _tmp == []:
+                continue
+            _tmp = {_t: tuple(set(_tmp))}
+            self._map.update(_tmp)
+
+        self._log.info('Match Result {}'.format(self._map))
+
+        _tmp: dict[int, list] = {}
+        for k, v in gen_speaker():
+            if k in tuple(chain(*self._map.values())):
+                continue
+            self._log.info('Start Match Speaker {} ({})'.format(k, v))
+
+            for _t, _v in _raw.items():
+                if 'asr' not in _v:
+                    continue
+                dd = [p.get('word', '') for p in gen_track(_t, True)]
+                dd = ' '.join(lazy_pinyin(dd))
+
+                cc = list(p[1] for p in gen_lines(*self._map.get(_t, ())))
+                cc = list(chain(*cc))
+                cc = ' '.join(lazy_pinyin(cc))
+                r0 = fuzz.ratio(dd, cc)
+
+                cc = list(p[1] for p in gen_lines(*self._map.get(_t, ()), k))
+                cc = list(chain(*cc))
+                cc = ' '.join(lazy_pinyin(cc))
+                r1 = fuzz.ratio(dd, cc)
+
+                self._log.debug(dict(uid=k,
+                                     name=v,
+                                     track=_t,
+                                     diff=r0-r1))
+                _tmp.setdefault(k, [])
+                _tmp[k].append((_t, r0-r1))
+
+        if len(_tmp) == 1:
+            for k, v in _tmp.items():
+                v = min(v, key=lambda x: x[1])[0]
+                break
+            _tmp = {v: tuple((*self._map.get(v, ()), k))}
+            self._map.update(_tmp)
+            self._log.info('Auto Select Track {}'.format(v))
+
+        self._log.info('Match Result {}'.format(self._map))
+
+        for k, v in gen_speaker():
+            if k in tuple(chain(*self._map.values())):
+                continue
+            self._log.error('Can\'t Match Speaker {} ({})'.format(k, v))
+            return -1
+
+        self._log.info('Start Match Script {} ({})'.format(0, _obj['title']))
+        return -1
 
     async def pretreat(self, **kwds):
         if not self._cfg:
