@@ -52,7 +52,6 @@ class Fountain(object):
                       for k, v in _obj[0]}
         self.scene = {k: {'title': re.sub('^\.', '', v[0]),
                           'lines': {i: {'name': b[0][1:] if b[0] else None,
-                                        'line': b[1],
                                         'word': list(filter(None, re.split(_del, b[1])))}
                                     for i, b in enumerate(v[1])}}
                       for k, v in enumerate(_obj[1])}

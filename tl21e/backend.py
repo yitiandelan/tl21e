@@ -21,7 +21,7 @@ from asyncio.exceptions import CancelledError
 from subprocess import PIPE
 from tempfile import TemporaryDirectory
 from base64 import b64encode
-from thefuzz import fuzz
+from thefuzz import fuzz, process
 from pypinyin import lazy_pinyin
 from itertools import chain
 
@@ -70,8 +70,6 @@ class ASRClient(object):
             try:
                 args = await self._pool.get()
                 uid, offset, waveform = args
-                # self._log.debug('Start: {}, Offset: {}, Waveform: {}'.format(uid, offset,
-                #                                                              len(waveform)))
                 req = models.SentenceRecognitionRequest()
                 req._deserialize(dict(SubServiceType=2,
                                       ProjectId=0,
@@ -112,13 +110,13 @@ class ASRClient(object):
                 _wav, n = {}, 0
                 for k, v in enumerate(_raw.split(max_dur=20)):
                     if v.meta['end'] - n > 50:
-                        _wav[k] = dict(offset=int(n*1600),
+                        _wav[k] = dict(offset=int(n*1000),
                                        scene=_raw.seconds[n:v.meta['start']])
                         n = v.meta['start']
                     if v.meta['end'] - n < 45:
                         continue
                 if k not in _wav:
-                    _wav[k] = dict(offset=int(n*1600),
+                    _wav[k] = dict(offset=int(n*1000),
                                    scene=_raw.seconds[n:v.meta['end']])
             for k, v in _wav.items():
                 self._log.debug(v['scene'])
@@ -209,6 +207,7 @@ class Process(object):
 
             _obj = _raw[k]['scene'][0]
             _obj = dict(title=_obj['title'],
+                        match={}, track={},
                         lines={int(k): v for k, v in _obj['lines'].items()},
                         speaker={k: v for k, v in enumerate(set(v['name'] for v in _obj['lines'].values()))})
             _raw[k]['scene'][0] = _obj
@@ -217,7 +216,16 @@ class Process(object):
         self._log.info(dict(speakers=_cfg[0],
                             audio_track=_cfg[1]))
 
-        def gen_track(s: int, lpf=False):
+        def gen_track(s: int, lpf=False, within=0, before=0):
+            if within or before:
+                for d in gen_track(s=s, lpf=lpf):
+                    if max(d['timecode']) < within:
+                        continue
+                    if before and min(d['timecode']) > before:
+                        continue
+                    yield d
+                return
+
             ws: list[dict] = _raw[s]['asr']
             def tc(x: dict): return min(*x.get('timecode', (-1)))
             ws.sort(key=tc)
@@ -240,11 +248,13 @@ class Process(object):
 
         def gen_lines(*s: int):
             dst = list(_obj['speaker'][n] for n in s)
-            for n in range(max(_obj['lines'])):
+            for n in range(max(_obj['lines'])+1):
                 if _obj['lines'][n]['name'] not in dst:
                     continue
-                yield n, _obj['lines'][n]['word']
+                yield n, _obj['lines'][n]['name'], _obj['lines'][n]['word']
 
+        _tmp: dict[int, list] = {}
+        # enter speaker match base track
         for _t, _v in _raw.items():
             if 'asr' not in _v:
                 continue
@@ -252,11 +262,10 @@ class Process(object):
             self._log.info('Start Match Audio Track {}'.format(_t))
             line = lazy_pinyin([n['word'] for n in _v['asr']])
             line = ' '.join(line)
-            _tmp = []
 
             for k, v in _obj['speaker'].items():
                 cc = [[] if _obj['lines'][n]['name'] != v else _obj['lines'][n]['word']
-                      for n in range(max(_obj['lines']))]
+                      for n in range(max(_obj['lines'])+1)]
                 for c in cc:
                     if len(c) == 0:
                         continue
@@ -273,16 +282,19 @@ class Process(object):
                                          name=v,
                                          size=len(c),
                                          ratio=t))
-                    _tmp.append(k)
+                    _tmp.setdefault(_t, [])
+                    _tmp[_t].append(k)
 
-            if _tmp == []:
+        # update result
+        for k in _raw:
+            if not _tmp.get(k):
                 continue
-            _tmp = {_t: tuple(set(_tmp))}
-            self._map.update(_tmp)
-
+            v = {k: tuple(set(_tmp[k]))}
+            self._map.update(v)
         self._log.info('Match Result {}'.format(self._map))
 
         _tmp: dict[int, list] = {}
+        # enter speaker match base self
         for k, v in gen_speaker():
             if k in tuple(chain(*self._map.values())):
                 continue
@@ -294,12 +306,12 @@ class Process(object):
                 dd = [p.get('word', '') for p in gen_track(_t, True)]
                 dd = ' '.join(lazy_pinyin(dd))
 
-                cc = list(p[1] for p in gen_lines(*self._map.get(_t, ())))
+                cc = list(p[2] for p in gen_lines(*self._map.get(_t, ())))
                 cc = list(chain(*cc))
                 cc = ' '.join(lazy_pinyin(cc))
                 r0 = fuzz.ratio(dd, cc)
 
-                cc = list(p[1] for p in gen_lines(*self._map.get(_t, ()), k))
+                cc = list(p[2] for p in gen_lines(*self._map.get(_t, ()), k))
                 cc = list(chain(*cc))
                 cc = ' '.join(lazy_pinyin(cc))
                 r1 = fuzz.ratio(dd, cc)
@@ -311,6 +323,7 @@ class Process(object):
                 _tmp.setdefault(k, [])
                 _tmp[k].append((_t, r0-r1))
 
+        # update result
         if len(_tmp) == 1:
             for k, v in _tmp.items():
                 v = min(v, key=lambda x: x[1])[0]
@@ -318,17 +331,99 @@ class Process(object):
             _tmp = {v: tuple((*self._map.get(v, ()), k))}
             self._map.update(_tmp)
             self._log.info('Auto Select Track {}'.format(v))
-
         self._log.info('Match Result {}'.format(self._map))
 
+        # check
         for k, v in gen_speaker():
             if k in tuple(chain(*self._map.values())):
                 continue
             self._log.error('Can\'t Match Speaker {} ({})'.format(k, v))
             return -1
 
+        for k, v in self._map.items():
+            _obj['track'][k] = self.fileset[k]
+            _obj['track'][k]['speaker'] = v
+
         self._log.info('Start Match Script {} ({})'.format(0, _obj['title']))
-        return -1
+        _tmp: dict[int, list] = {k: 0 for k in _raw}
+
+        def get_track(n):
+            for s in _obj['speaker']:
+                if n != _obj['speaker'][s]:
+                    continue
+                for t in self._map:
+                    if s not in self._map[t]:
+                        continue
+                    return t
+            raise
+
+        for k, n, w in gen_lines(*chain(*self._map.values())):
+            self._log.info('{} ({}) [cyan]{}[/cyan]'.format(n, k, ' '.join(w)),
+                           extra=dict(markup=True))
+
+            n = get_track(n)
+            _c = {k: ' '.join(lazy_pinyin(v))
+                  for k, v in enumerate(w)}
+
+            _sop = _tmp[n]
+            _eop = len(''.join(_c.values()).split()) * int(1000 * 0.6)
+            _eop = max(16*1000, _eop) + _sop
+
+            _s = [p for p in gen_track(n, within=_sop, before=_eop)]
+            _s = {k: v for k, v in enumerate(_s)}
+            _d = {k: ' '.join(lazy_pinyin(_s[k]['word']))
+                  for k in range(max(_s)+1)}
+
+            def gen_table(ref: str = '', start: int = 0):
+                if start not in _d:
+                    return
+                t, c, g = len(ref.split()), 0, []
+                for k in range(start, max(_d)+1):
+                    g.append(k)
+                    c += len(_d[k].split())
+                    if c < (t - 2):
+                        continue
+                    elif c > (t + 6):
+                        break
+                    yield g
+                yield from gen_table(ref=ref, start=start+1)
+
+            _ans: dict[int, list] = {}
+            for i, c in _c.items():
+                for g in gen_table(c):
+                    d = ' '.join(_d[p] for p in g)
+                    t = process.extractOne(d, _c)
+                    if not t:
+                        continue
+                    elif t[2] != i:
+                        continue
+                    elif t[1] < 90:
+                        continue
+                    _ans.setdefault(i, [])
+                    _ans[i].append((t[1], g[0], g[-1]))
+            for i in range(max(_c)+1):
+                if i not in _ans:
+                    continue
+                _ans[i] = max(_ans[i])
+
+            if _ans:
+                _ans = {k: (min(_s[v[1]]['timecode']), max(_s[v[2]]['timecode']))
+                        for k, v in _ans.items()}
+                _obj['lines'][k]['track'] = n
+                _obj['lines'][k]['timecode'] = _ans
+                _tmp[n] = max(_ans[max(_ans)]) - 1000
+            else:
+                self._log.error(
+                    'Can\'t Match Script {} Line ({})'.format(0, k))
+                pass
+
+        fn = os.path.abspath('results.json')
+        with FileIO(fn, 'wb') as fp:
+            json.dump({0: _obj},
+                      TextIOWrapper(fp, 'utf-8'), ensure_ascii=False)
+        self._log.info('Write JSON: {}'.format(fn))
+        self._log.info('Finish Match Script')
+        return 0
 
     async def pretreat(self, **kwds):
         if not self._cfg:

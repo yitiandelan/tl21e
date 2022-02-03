@@ -48,7 +48,7 @@ async def main():
     level = logging.DEBUG if args.debug else logging.INFO
     level = logging.WARNING if args.quite else level
     logging.basicConfig(level=level, format='%(message)s',
-                        datefmt='[%X]', handlers=[RichHandler()])
+                        datefmt='[%H:%M:%S]', handlers=[RichHandler()])
 
     _log = logging.getLogger('main')
     _log.debug(args)
