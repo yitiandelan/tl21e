@@ -24,8 +24,9 @@ from base64 import b64encode
 from thefuzz import fuzz, process
 from pypinyin import lazy_pinyin
 from itertools import chain
+from jinja2 import Environment, PackageLoader, select_autoescape
 
-from format import Fountain
+from .format import Fountain
 
 try:
     from tencentcloud.common import credential
@@ -397,7 +398,7 @@ class Process(object):
                         continue
                     elif t[2] != i:
                         continue
-                    elif t[1] < 90:
+                    elif t[1] < 80:
                         continue
                     _ans.setdefault(i, [])
                     _ans[i].append((t[1], g[0], g[-1]))
@@ -580,6 +581,97 @@ class Process(object):
     async def export(self, **kwds):
         if not self._cfg:
             raise
+        fn = os.path.abspath('results.json')
+        f0 = lambda x: int(x) if isinstance(x, str) and x.isdigit() else x
+        f1 = lambda x: x if not isinstance(x, dict) else {f0(k): v for k, v in x.items()}
+        _t: dict[int, dict] = {}
+        fs: list[tuple] = []
+
+        self._log.info('Load {}'.format(fn))
+        with FileIO(fn, 'rb') as fp:
+            _t = json.load(fp, object_hook=f1)
+
+        def gen_script():
+            for k, v in _t.items():
+                s: dict[str, dict | str] = v.copy()
+                yield k, s
+
+        for t, _obj in gen_script():
+            if t not in range(1):
+                continue
+            def gen_track(_obj: dict[str, dict], t: int):
+                for k in range(max(_obj['lines'])+1):
+                    s: dict[str, dict | str | int] = _obj['lines'][k]
+                    if s['track'] != t:
+                        continue
+                    yield k, s
+
+            def gen_mark(t: int):
+                c = {k: v for k, v in gen_track(_obj, t)}
+                d = list(c.keys()) + [-1]
+                d.sort()
+                for n in range(1, len(d)):
+                    t = d[n-1]
+                    s = c.get(t, {}).get('timecode', {0: (0, 0)})
+                    t = d[n]
+                    s = max(chain(*(p for p in s.values())))
+                    e = min(chain(*(p for p in c.get(t)['timecode'].values())))
+                    yield t, max(s, e-500) if 0 in c.get(t)['timecode'] else min(s+500, e), c[t]
+
+            def gen_block(t: int):
+                t = list(gen_mark(t))
+                for n in range(len(t)-1):
+                    yield t[n][0], t[n][2]['track'], t[n][2]['name'], t[n][1], t[n+1][1]
+                n = n + 1
+                e: dict[int, list] = t[n][2]['timecode']
+                e = max(chain(*(p for p in e.values())))
+                yield t[n][0], t[n][2]['track'], t[n][2]['name'], t[n][1], e
+
+            _tmp: list[tuple] = []
+            for t in _obj['track']:
+                for c in gen_block(t):
+                    _tmp.append(c)
+            _tmp.sort()
+            fs = _tmp
+
+        def gen_files() -> dict:
+            for _, s in gen_script():
+                for k, v in s.get('track').items():
+                    yield k, v
+                break
+
+        def gen_audition_file(_obj: list[tuple]) -> bytes:
+            # self._log.info(_obj)
+            _now: dict[int, int] = {}
+            _cnt = 0
+            for k in _obj:
+                _now.setdefault(k[0], _cnt)
+                _cnt += k[-1] - k[-2]
+
+            def gen_lines(s):
+                for p in _obj:
+                    if p[2] != s:
+                        continue
+                    yield dict(idx=p[0], file=p[1], sop=p[3], eop=p[4], title='LINE {}'.format(p[0]),
+                               now_time=_now.get(p[0], 0),
+                               ext_time=_now.get(p[0], 0)+p[4]-p[3])
+
+            def gen_tracks():
+                for k, v in enumerate(set(p[2] for p in _obj)):
+                    yield dict(idx=k, name=v, lines=list(gen_lines(v)))
+
+            _env = Environment(loader=PackageLoader('tl21e', 'templates'),
+                               autoescape=select_autoescape(['xml']))
+            _tmp = _env.get_template('audition.xml')
+            _xml = _tmp.render(tracks=list(gen_tracks()),
+                               files=list(dict(idx=k, handler='AmioWav', path=v['sha1']) for k, v in gen_files()),
+                               zoom=16,
+                               samplerate=16000,
+                               duration=4800000)
+            return _xml.encode()
+
+        with FileIO('results.sesx', 'wb') as fp:
+            fp.write(gen_audition_file(fs))
 
     async def report(self, **kwds):
         if not self._cfg:

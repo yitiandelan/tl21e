@@ -13,7 +13,7 @@ import logging
 from io import FileIO
 from rich.logging import RichHandler
 
-from backend import Process
+from .backend import Process
 
 
 async def main():
@@ -73,6 +73,10 @@ async def main():
             await _mod.load()
             _log.info('Enter Match')
             await _mod.match(args.engine)
+        case 'export':
+            await _mod.load()
+            _log.info('Enter Export')
+            await _mod.export()
         case '_':
             pass
 
