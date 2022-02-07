@@ -16,6 +16,7 @@ from io import FileIO, TextIOWrapper
 from os import PathLike
 from uuid import uuid4
 from shutil import rmtree
+from pathlib import Path
 from asyncio import Queue
 from asyncio.exceptions import CancelledError
 from subprocess import PIPE
@@ -42,10 +43,14 @@ class ASRClient(object):
         self._text = Queue()
         self._task: list[asyncio.subprocess.Process] = []
 
-        fn = os.path.join('/home/tianlan/.config', 'tl21e', 'config.json')
+        fn = Path(os.path.join(Path().home(),
+                               '.config', 'tl21e',
+                               'config.json'))
 
-        if os.path.exists(fn):
-            fp = FileIO(fn, 'rb')
+        if not fn.exists():
+            fn.touch()
+
+        with FileIO(fn, 'rb') as fp:
             self._cfg = json.load(TextIOWrapper(fp, 'utf-8'))
 
         self._cfg.setdefault('aliyun', {})
@@ -145,13 +150,14 @@ class ASRClient(object):
 
 
 class Process(object):
-    def __init__(self, config: FileIO, engine: str = 'paddle') -> None:
+    def __init__(self, config: PathLike[str], engine: str = 'paddle') -> None:
         super().__init__()
 
         self._log = logging.getLogger('backend')
-        self._cwd = '/home/tianlan/.cache/tl21e'
+        self._cwd = Path(os.path.join(Path().home(),
+                                      '.cache', 'tl21e'))
 
-        self._cfn = config
+        self._cfn = Path(config)
         self._cfg: dict[str, str] = {}
         self._asr = None
         self._eng = engine
@@ -159,8 +165,8 @@ class Process(object):
 
         self.fileset: dict[int, dict[str, str | bool]] = {}
 
-        if not os.path.exists(self._cwd):
-            os.mkdir(self._cwd)
+        if not self._cwd.exists():
+            self._cwd.mkdir()
 
     async def match(self, engine: str = '', **kwds):
         if not self._cfg:
@@ -537,12 +543,13 @@ class Process(object):
         self._log.debug(self.fileset)
 
     async def load(self, **kwds):
-        self._cfg = yaml.safe_load(self._cfn)
-        self._cfn.close()
+        if not self._cfn.exists():
+            self._cfn.touch()
+        self._cfg = yaml.safe_load(FileIO(self._cfn, 'rb'))
 
         if not isinstance(self._cfg, (dict, )):
             self._cfg = dict(name='normal', media=[],
-                             uuid=uuid4().hex)
+                             uuid=str(uuid4()))
 
         for k, v in enumerate(self._cfg.get('media', ())):
             fp = v.split(':')

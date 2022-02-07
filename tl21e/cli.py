@@ -4,13 +4,14 @@
 
 # Language: Python
 
-__all__ = 'main',
+__all__ = 'main', 'exec'
 
 import os
 import asyncio
 import logging
 
 from io import FileIO
+from pathlib import Path
 from rich.logging import RichHandler
 
 from .backend import Process
@@ -21,20 +22,20 @@ async def main():
 
     obj = ArgumentParser()
     obj.add_argument('-e', '--engine', type=str,
-                     metavar='engine', choices=['paddle', 'aliyun', 'tencent'],
+                     choices=['paddle', 'aliyun', 'tencent'],
                      default='tencent', help='speech recognition engine')
     obj.add_argument('-f', '--config', type=str,
                      metavar='file',
                      default='config.yaml', help='select config file')
     obj.add_argument('-v', '--verbose', dest='debug',
                      action='store_true',
-                     default=False, help='increase logging verbosity')
+                     default=True, help='increase logging verbosity')
     obj.add_argument('-q', '--quite', dest='quite',
                      action='store_true',
                      default=False, help='decrease logging verbosity')
 
-    subobj = obj.add_subparsers(dest='method')
-    applet = [subobj.add_parser(app) for app in ('clean', 'import', 'replay',
+    subobj = obj.add_subparsers(dest='method', required=True)
+    applet = [subobj.add_parser(app) for app in ('clean', 'import', 'config',
                                                  'match', 'export', 'report')]
 
     applet[1].add_argument('file', type=FileIO, nargs='*')
@@ -53,12 +54,10 @@ async def main():
     _log = logging.getLogger('main')
     _log.debug(args)
 
-    if not os.path.isfile(args.config):
-        os.system('touch {}'.format(args.config))
-    _mod = Process(FileIO(args.config, 'rb'))
+    _mod = Process(Path(args.config))
 
     match args.method:
-        case None:
+        case 'repl':
             await _mod.load()
             _log.info('Enter REPL')
         case 'clean':
@@ -78,9 +77,15 @@ async def main():
             _log.info('Enter Export')
             await _mod.export()
         case _:
-            pass
+            _log.error('Unknow Method {}'.format(args.method))
+            return -1
 
     _log.info('Done (PASS, rc=0)')
+
+
+def exec():
+    asyncio.run(main())
+
 
 if __name__ == '__main__':
     asyncio.run(main())
