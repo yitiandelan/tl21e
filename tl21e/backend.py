@@ -28,12 +28,9 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 
 from .format import Fountain
 
-try:
-    from tencentcloud.common import credential
-    from tencentcloud.common.exception.tencent_cloud_sdk_exception import TencentCloudSDKException
-    from tencentcloud.asr.v20190614 import asr_client, models
-except ImportError:
-    pass
+from tencentcloud.common import credential
+from tencentcloud.common.exception.tencent_cloud_sdk_exception import TencentCloudSDKException
+from tencentcloud.asr.v20190614 import asr_client, models
 
 
 class ASRClient(object):
@@ -128,9 +125,9 @@ class ASRClient(object):
                 await self._pool.put((k, v['offset'], bs.decode('utf-8')))
 
             for k, v in [await self._text.get() for _ in _wav]:
+                assert len(v)
                 _ans += v
 
-            assert _ans
             await ep.put(_ans)
 
         _obj = Queue()
@@ -391,6 +388,7 @@ class Process(object):
 
             _ans: dict[int, list] = {}
             for i, c in _c.items():
+                m = []
                 for g in gen_table(c):
                     d = ' '.join(_d[p] for p in g)
                     t = process.extractOne(d, _c)
@@ -400,12 +398,12 @@ class Process(object):
                         continue
                     elif t[1] < 80:
                         continue
-                    _ans.setdefault(i, [])
-                    _ans[i].append((t[1], g[0], g[-1]))
-            for i in range(max(_c)+1):
-                if i not in _ans:
-                    continue
-                _ans[i] = max(_ans[i])
+                    m.append((t[1], g[0], g[-1]))
+
+                if len(m):
+                    _ans[i] = max(m)
+                else:
+                    self._log.warn(c)
 
             if _ans:
                 _ans = {k: (min(_s[v[1]]['timecode']), max(_s[v[2]]['timecode']))
@@ -437,7 +435,7 @@ class Process(object):
         for k, v in self.fileset.items():
             self._log.debug(v)
             match v['path'].split('.')[-1]:
-                case 'wav' | 'mp3':
+                case 'wav' | 'mp3' | 'm4a':
                     fn = os.path.join(self._cwd, '{}.json'.format(v['sha1']))
                     if os.path.exists(fn) and os.path.getsize(fn):
                         continue
@@ -497,7 +495,7 @@ class Process(object):
             if not t:
                 continue
             elif _obj or self.fileset:
-                n = max(*_obj, *self.fileset) + 1
+                n = max(tuple(_obj) + tuple(self.fileset)) + 1
             else:
                 n = 0
 
@@ -516,7 +514,7 @@ class Process(object):
                 continue
             _cmds: list[tuple] = []
             match v['path'].split('.')[-1]:
-                case 'wav' | 'mp3':
+                case 'wav' | 'mp3' | 'm4a':
                     _cmds.append(('ffmpeg', '-i', os.path.abspath(v['path']), '-f', 'ffmetadata',
                                   '-v', '0', '-y', '{}.metadata'.format(fn)))
                     _cmds.append(('ffmpeg', '-i', os.path.abspath(v['path']), '-f', 'wav',
@@ -599,10 +597,11 @@ class Process(object):
         for t, _obj in gen_script():
             if t not in range(1):
                 continue
+
             def gen_track(_obj: dict[str, dict], t: int):
                 for k in range(max(_obj['lines'])+1):
                     s: dict[str, dict | str | int] = _obj['lines'][k]
-                    if s['track'] != t:
+                    if s.get('track', -1) != t:
                         continue
                     yield k, s
 
@@ -641,7 +640,6 @@ class Process(object):
                 break
 
         def gen_audition_file(_obj: list[tuple]) -> bytes:
-            # self._log.info(_obj)
             _now: dict[int, int] = {}
             _cnt = 0
             for k in _obj:
@@ -664,10 +662,11 @@ class Process(object):
                                autoescape=select_autoescape(['xml']))
             _tmp = _env.get_template('audition.xml')
             _xml = _tmp.render(tracks=list(gen_tracks()),
-                               files=list(dict(idx=k, handler='AmioWav', path=v['sha1']) for k, v in gen_files()),
-                               zoom=16,
-                               samplerate=16000,
-                               duration=4800000)
+                               files=list(dict(idx=k, handler='AmioWav',
+                                               path=v['path']) for k, v in gen_files()),
+                               zoom=48,
+                               samplerate=48000,
+                               duration=1000+_cnt)
             return _xml.encode()
 
         with FileIO('results.sesx', 'wb') as fp:
