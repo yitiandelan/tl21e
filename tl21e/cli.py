@@ -77,7 +77,7 @@ async def main():
             await _mod.load()
             _log.info('Enter Export')
             await _mod.export()
-        case '_':
+        case _:
             pass
 
     _log.info('Done (PASS, rc=0)')

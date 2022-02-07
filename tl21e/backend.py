@@ -468,7 +468,7 @@ class Process(object):
                     finally:
                         fp.close()
                     continue
-                case '_':
+                case _:
                     continue
 
         await self._asr.close()
@@ -521,7 +521,7 @@ class Process(object):
                                   '-ar', '16000', '-ac', '1', '-report', '-v', '0', '-y', fn))
                 case 'md' | 'fountain':
                     _cmds.append(('cp', '-f', os.path.abspath(v['path']), fn))
-                case '_':
+                case _:
                     continue
 
             for _cmd in _cmds:
