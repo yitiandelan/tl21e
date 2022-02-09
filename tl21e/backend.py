@@ -47,7 +47,9 @@ class ASRClient(object):
                                '.config', 'tl21e',
                                'config.json'))
 
-        if not fn.exists():
+        if not fn.cwd().is_dir():
+            fn.cwd().mkdir(parents=True)
+        if not fn.is_file():
             fn.touch()
 
         with FileIO(fn, 'rb') as fp:
@@ -165,8 +167,11 @@ class Process(object):
 
         self.fileset: dict[int, dict[str, str | bool]] = {}
 
-        if not self._cwd.exists():
-            self._cwd.mkdir()
+        if ' ' in os.getcwd():
+            raise BaseException
+
+        if not self._cwd.is_dir():
+            self._cwd.mkdir(parents=True)
 
     async def match(self, engine: str = '', **kwds):
         if not self._cfg:
@@ -180,8 +185,9 @@ class Process(object):
             return -1
 
         for k, v in self.fileset.items():
-            fn = os.path.join(self._cwd, '{}.json'.format(v['sha1']))
-            if os.path.exists(fn) and os.path.getsize(fn):
+            fn = Path(os.path.join(self._cwd,
+                                   '{}.json'.format(v['sha1'])))
+            if fn.is_file() and os.path.getsize(fn):
                 continue
             self._log.info('Enter Pre-treat')
             try:
@@ -190,7 +196,7 @@ class Process(object):
                 self._log.error(err)
                 return -1
 
-            if os.path.exists(fn) and os.path.getsize(fn):
+            if fn.is_file() and os.path.getsize(fn):
                 continue
             self._log.error(v)
             return -1
@@ -199,11 +205,12 @@ class Process(object):
         _raw: dict[int, dict] = {}
 
         for k, v in self.fileset.items():
-            fn = os.path.join(self._cwd, '{}.json'.format(v['sha1']))
+            fn = Path(os.path.join(self._cwd,
+                                   '{}.json'.format(v['sha1'])))
             with FileIO(fn, 'rb') as fp:
                 f0 = lambda x: int(x) if isinstance(x, str) and x.isdigit() else x
                 f1 = lambda x: x if not isinstance(x, dict) else {f0(k): v for k, v in x.items()}
-                _raw[k] = json.load(fp, object_hook=f1)
+                _raw[k] = json.load(TextIOWrapper(fp, 'utf-8'), object_hook=f1)
             if 'scene' not in _raw[k]:
                 continue
             if _obj:
@@ -409,7 +416,7 @@ class Process(object):
                 if len(m):
                     _ans[i] = max(m)
                 else:
-                    self._log.warn(c)
+                    self._log.warn('Un-Match: {}'.format(c))
 
             if _ans:
                 _ans = {k: (min(_s[v[1]]['timecode']), max(_s[v[2]]['timecode']))
@@ -422,11 +429,11 @@ class Process(object):
                     'Can\'t Match Script {} Line ({})'.format(0, k))
                 pass
 
-        fn = os.path.abspath('results.json')
+        fn = Path('results.json')
         with FileIO(fn, 'wb') as fp:
             json.dump({0: _obj},
                       TextIOWrapper(fp, 'utf-8'), ensure_ascii=False)
-        self._log.info('Write JSON: {}'.format(fn))
+        self._log.info('Write JSON: {}'.format(os.path.abspath(fn)))
         self._log.info('Finish Match Script')
         return 0
 
@@ -442,8 +449,9 @@ class Process(object):
             self._log.debug(v)
             match v['path'].split('.')[-1]:
                 case 'wav' | 'mp3' | 'm4a':
-                    fn = os.path.join(self._cwd, '{}.json'.format(v['sha1']))
-                    if os.path.exists(fn) and os.path.getsize(fn):
+                    fn = Path(os.path.join(self._cwd,
+                                           '{}.json'.format(v['sha1'])))
+                    if fn.is_file() and os.path.getsize(fn):
                         continue
                     fp = FileIO(fn, 'wb')
                     try:
@@ -453,22 +461,23 @@ class Process(object):
                         _ans = await _obj.get()
                         json.dump(dict(asr=_ans),
                                   TextIOWrapper(fp, 'utf-8'), ensure_ascii=False)
-                        self._log.info('Write JSON: {}'.format(fn))
+                        self._log.info('Write JSON: {}'.format(os.path.abspath(fn)))
                     except BaseException as err:
                         self._log.error(err)
                     finally:
                         fp.close()
                     continue
                 case 'md' | 'fountain':
-                    fn = os.path.join(self._cwd, '{}.json'.format(v['sha1']))
-                    if os.path.exists(fn) and os.path.getsize(fn):
+                    fn = Path(os.path.join(self._cwd,
+                                           '{}.json'.format(v['sha1'])))
+                    if fn.is_file() and os.path.getsize(fn):
                         continue
                     fp = FileIO(fn, 'wb')
                     try:
                         _doc = Fountain(os.path.join(self._cwd, v['sha1']))
                         json.dump(dict(heads=_doc.heads, scene=_doc.scene),
                                   TextIOWrapper(fp, 'utf-8'), ensure_ascii=False)
-                        self._log.info('Write JSON: {}'.format(fn))
+                        self._log.info('Write JSON: {}'.format(os.path.abspath(fn)))
                     except BaseException as err:
                         self._log.error(err)
                     finally:
@@ -514,8 +523,8 @@ class Process(object):
             _obj.setdefault(n, t)
 
         for k, v in _obj.items():
-            fn = os.path.join(self._cwd, v['sha1'])
-            if os.path.exists(fn):
+            fn = Path(os.path.join(self._cwd, v['sha1']))
+            if fn.is_file():
                 _obj[k]['hashed'] = True
                 continue
             _cmds: list[tuple] = []
@@ -535,7 +544,7 @@ class Process(object):
                 await _pid.wait()
                 assert await _pid.wait() == 0, _pid.returncode
 
-            if not os.path.exists(fn):
+            if not fn.is_file():
                 self._log.error('Can\'t HASHED for: {}'.format(v['path']))
             _obj[k]['hashed'] = True
 
@@ -543,7 +552,7 @@ class Process(object):
         self._log.debug(self.fileset)
 
     async def load(self, **kwds):
-        if not self._cfn.exists():
+        if not self._cfn.is_file():
             self._cfn.touch()
         self._cfg = yaml.safe_load(FileIO(self._cfn, 'rb'))
 
@@ -553,10 +562,10 @@ class Process(object):
 
         for k, v in enumerate(self._cfg.get('media', ())):
             fp = v.split(':')
-            if not os.path.isfile(fp[0]):
+            if not Path(fp[0]).is_file():
                 continue
             self.fileset.setdefault(k, dict(path=fp[0]))
-            if len(fp) == 1 or not os.path.isfile(fp[1]):
+            if len(fp) == 1 or not Path(fp[1]).is_file():
                 continue
             sha1 = os.path.basename(fp[1]).split('.')[0]
             if len(sha1) != 40:
@@ -586,15 +595,15 @@ class Process(object):
     async def export(self, **kwds):
         if not self._cfg:
             raise
-        fn = os.path.abspath('results.json')
+        fn = Path('results.json')
         f0 = lambda x: int(x) if isinstance(x, str) and x.isdigit() else x
         f1 = lambda x: x if not isinstance(x, dict) else {f0(k): v for k, v in x.items()}
         _t: dict[int, dict] = {}
         fs: list[tuple] = []
 
-        self._log.info('Load {}'.format(fn))
+        self._log.info('Load {}'.format(os.path.abspath(fn)))
         with FileIO(fn, 'rb') as fp:
-            _t = json.load(fp, object_hook=f1)
+            _t = json.load(TextIOWrapper(fp, 'utf-8'), object_hook=f1)
 
         def gen_script():
             for k, v in _t.items():
@@ -676,8 +685,10 @@ class Process(object):
                                duration=1000+_cnt)
             return _xml.encode()
 
-        with FileIO('results.sesx', 'wb') as fp:
+        fn = Path('results.sesx')
+        with FileIO(fn, 'wb') as fp:
             fp.write(gen_audition_file(fs))
+        self._log.info('Write {}'.format(os.path.abspath(fn)))
 
     async def report(self, **kwds):
         if not self._cfg:
